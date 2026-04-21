@@ -39,6 +39,7 @@
 #include "launch/steps/PrintServers.h"
 #include "minecraft/auth/AccountData.h"
 #include "minecraft/auth/AccountList.h"
+#include "minecraft/auth/MinecraftAccount.h"
 
 #include "ui/InstanceWindow.h"
 #include "ui/dialogs/CustomMessageBox.h"
@@ -91,37 +92,35 @@ void LaunchController::decideAccount()
         m_accountToUse = accounts->at(instanceAccountIndex);
     }
 
-    if (!accounts->anyAccountIsValid()) {
-        // Tell the user they need to log in at least one account in order to play.
-        auto reply = CustomMessageBox::selectable(m_parentWidget, tr("No Accounts"),
-                                                  tr("In order to play Minecraft, you must have at least one Microsoft "
-                                                     "account which owns Minecraft logged in. "
-                                                     "Would you like to open the account manager to add an account now?"),
-                                                  QMessageBox::Information, QMessageBox::Yes | QMessageBox::No)
-                         ->exec();
-
-        if (reply == QMessageBox::Yes) {
-            // Open the account manager.
-            APPLICATION->ShowGlobalSettings(m_parentWidget, "accounts");
-        } else if (reply == QMessageBox::No) {
-            // Do not open "profile select" dialog.
-            return;
-        }
-    }
-
     if (!m_accountToUse) {
-        // If no default account is set, ask the user which one to use.
-        ProfileSelectDialog selectDialog(tr("Which account would you like to use?"), ProfileSelectDialog::GlobalDefaultCheckbox,
-                                         m_parentWidget);
+        // Check if there are any accounts at all
+        if (accounts->count() == 0) {
+            // No accounts exist, offer to create an offline account directly
+            ChooseOfflineNameDialog dialog(tr("No account found. Please enter a username to create an offline account."), m_parentWidget);
+            dialog.setWindowTitle(tr("Create Offline Account"));
+            if (dialog.exec() == QDialog::Accepted) {
+                const MinecraftAccountPtr account = MinecraftAccount::createOffline(dialog.getUsername());
+                if (account) {
+                    account->login()->start();  // The task will complete here.
+                    accounts->addAccount(account);
+                    m_accountToUse = account;
+                    accounts->setDefaultAccount(account);
+                }
+            }
+        } else {
+            // Accounts exist, show profile selection dialog
+            ProfileSelectDialog selectDialog(tr("Which account would you like to use?"), ProfileSelectDialog::GlobalDefaultCheckbox,
+                                             m_parentWidget);
 
-        selectDialog.exec();
+            selectDialog.exec();
 
-        // Launch the instance with the selected account.
-        m_accountToUse = selectDialog.selectedAccount();
+            // Launch the instance with the selected account.
+            m_accountToUse = selectDialog.selectedAccount();
 
-        // If the user said to use the account as default, do that.
-        if (selectDialog.useAsGlobalDefault() && m_accountToUse) {
-            accounts->setDefaultAccount(m_accountToUse);
+            // If the user said to use the account as default, do that.
+            if (selectDialog.useAsGlobalDefault() && m_accountToUse) {
+                accounts->setDefaultAccount(m_accountToUse);
+            }
         }
     }
 }
@@ -194,6 +193,12 @@ QString LaunchController::askOfflineName(const QString& playerName, bool* ok) co
 void LaunchController::login()
 {
     decideAccount();
+
+    // Check if an account was selected after decideAccount()
+    if (!m_accountToUse) {
+        emitAborted();
+        return;
+    }
 
     LaunchDecision decision = decideLaunchMode();
     while (decision == LaunchDecision::Undecided) {
